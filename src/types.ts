@@ -104,6 +104,10 @@ export interface WealthStrategy {
 }
 
 export interface DashboardData {
+  /** TWD per 1 USD (e.g. 32.85). Used as divisor: twdCash / rate → USD. */
+  usdTwdRate?: number;
+  usdHkdRate?: number;
+  usdJpyRate?: number;
   totalRaw: number;
   totalPurchasingPower: number;
   totalPurchasingPowerTrend: number[];

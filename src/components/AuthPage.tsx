@@ -7,9 +7,10 @@ interface AuthPageProps {
   isLoggingIn: boolean;
   onBack: () => void;
   t: (key: any) => string;
+  loginError?: string | null;
 }
 
-export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, isLoggingIn, onBack, t }) => {
+export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, isLoggingIn, onBack, t, loginError }) => {
   return (
     <div className="min-h-screen bg-[#f5f5f4] flex items-center justify-center p-4 font-sans">
       <motion.div 
@@ -37,6 +38,12 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, isLoggingIn, onBack
           {t('taglineGlobalCitizen')}
         </p>
         
+        {loginError && (
+          <div className="mb-6 p-4 rounded-2xl bg-amber-50 border border-amber-200 text-left">
+            <p className="text-[11px] text-amber-900 leading-relaxed font-medium">{loginError}</p>
+          </div>
+        )}
+
         <div className="space-y-4">
           <button 
             onClick={onLogin}

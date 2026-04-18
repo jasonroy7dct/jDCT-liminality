@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { encryptData, decryptData } from './lib/encryption';
 import { 
   TrendingUp, 
@@ -100,8 +100,6 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { GoogleDriveService } from './lib/googleDrive';
 import { translations } from './translations';
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-
 const InstitutionLogo = ({ src, name, className = "w-10 h-10" }: { src?: string, name: string, className?: string }) => {
   const [error, setError] = useState(false);
   
@@ -136,7 +134,18 @@ const InstitutionLogo = ({ src, name, className = "w-10 h-10" }: { src?: string,
 type Tab = 'dashboard' | 'accounts' | 'transactions' | 'tax' | 'settings' | 'strategy' | 'simulator' | 'history';
 
 const COLORS = ['#0052CC', '#00A3C4', '#24292F'];
-const FX_RATE = 32.85;
+
+const DEFAULT_USD_TWD_RATE = 32.85;
+const DEFAULT_USD_HKD_RATE = 7.8;
+const DEFAULT_USD_JPY_RATE = 150;
+
+let geminiSingleton: GoogleGenAI | null = null;
+function getGeminiClient(): GoogleGenAI | null {
+  const key = process.env.GEMINI_API_KEY as string | undefined;
+  if (!key) return null;
+  if (!geminiSingleton) geminiSingleton = new GoogleGenAI({ apiKey: key });
+  return geminiSingleton;
+}
 
 const AccountListItem = ({ 
   account, 
@@ -226,6 +235,10 @@ export default function App() {
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
   const [data, setData] = useState<DashboardData | null>(null);
+  const fxRate = data?.usdTwdRate ?? DEFAULT_USD_TWD_RATE;
+  const hkdRate = data?.usdHkdRate ?? DEFAULT_USD_HKD_RATE;
+  const jpyRate = data?.usdJpyRate ?? DEFAULT_USD_JPY_RATE;
+
   const [firestoreAccounts, setFirestoreAccounts] = useState<Account[]>([]);
   const [apiAccounts, setApiAccounts] = useState<Account[]>([]);
   const [firestoreTransactions, setFirestoreTransactions] = useState<Transaction[]>([]);
@@ -237,7 +250,8 @@ export default function App() {
   const [language, setLanguage] = useState<'en' | 'zh'>('en');
   const [accountTimeRange, setAccountTimeRange] = useState<'1W' | '1M' | '3M' | '1Y' | 'ALL'>('1M');
 
-  const t = (key: keyof typeof translations['en']) => translations[language][key as any] || key;
+  const t = (key: keyof typeof translations['en'] | (string & {})) =>
+    (translations[language] as Record<string, string>)[key as string] ?? String(key);
 
   useEffect(() => {
     if (firestoreAccounts.length > 0 && accountOrder.length === 0) {
@@ -299,8 +313,8 @@ export default function App() {
     const equities = accounts.filter(a => a.type === 'Investment').reduce((sum, a) => sum + a.balance, 0);
     const liabilities = accounts.filter(a => a.type === 'Credit Card').reduce((sum, a) => sum + a.balance, 0);
     
-    const totalRaw = usdCash + (twdCash / FX_RATE) + equities - liabilities;
-    const taxDrag = (equities * 0.15) + (twdCash / FX_RATE * 0.05); 
+    const totalRaw = usdCash + (twdCash / fxRate) + equities - liabilities;
+    const taxDrag = (equities * 0.15) + (twdCash / fxRate * 0.05); 
     const totalPurchasingPower = Math.max(0, totalRaw - taxDrag);
     
     // Simple trend generation if not provided by API
@@ -324,7 +338,7 @@ export default function App() {
         { label: t('runway'), score: Math.min(100, Math.floor(totalPurchasingPower / 5000)), status: t('strong') }
       ]
     };
-  }, [data, accounts, FX_RATE]);
+  }, [data, accounts, fxRate]);
   const [loading, setLoading] = useState(true);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [showAuth, setShowAuth] = useState(false);
@@ -334,6 +348,9 @@ export default function App() {
   const [showFBARModal, setShowFBARModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [linkToken, setLinkToken] = useState<string | null>(null);
+  /** null = still checking /api/plaid_ready */
+  const [plaidBackendReady, setPlaidBackendReady] = useState<boolean | null>(null);
+  const [loginError, setLoginError] = useState<string | null>(null);
   const [plaidConnected, setPlaidConnected] = useState(false);
   const [selectedAccount, setSelectedAccount] = useState<string | null>(null);
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
@@ -516,8 +533,6 @@ export default function App() {
   const [googleDriveError, setGoogleDriveError] = useState<string | null>(null);
   const [lastGoogleSync, setLastGoogleSync] = useState<string | null>(localStorage.getItem('last_google_sync'));
 
-  // FX_RATE moved to top level
-
     const formatCurrency = (val: number, currency?: string, forceCurrency?: string) => {
     const targetCurrency = forceCurrency || displayCurrency;
     let finalVal = val;
@@ -526,18 +541,18 @@ export default function App() {
     // We need to convert it to the targetCurrency.
     if (currency) {
       if (currency === 'USD' && targetCurrency === 'TWD') {
-        finalVal = val * FX_RATE;
+        finalVal = val * fxRate;
       } else if (currency === 'TWD' && targetCurrency === 'USD') {
-        finalVal = val / FX_RATE;
+        finalVal = val / fxRate;
       } else if (currency !== targetCurrency) {
         // Fallback for other currencies if needed
-        const valInUSD = currency === 'HKD' ? val / 7.8 : currency === 'JPY' ? val / 150 : val;
-        finalVal = targetCurrency === 'TWD' ? valInUSD * FX_RATE : valInUSD;
+        const valInUSD = currency === 'HKD' ? val / hkdRate : currency === 'JPY' ? val / jpyRate : val;
+        finalVal = targetCurrency === 'TWD' ? valInUSD * fxRate : valInUSD;
       }
     } else {
       // If no currency is provided, assume 'val' is already in USD basis
       if (targetCurrency === 'TWD') {
-        finalVal = val * FX_RATE;
+        finalVal = val * fxRate;
       }
     }
 
@@ -614,10 +629,10 @@ export default function App() {
 
     const convertToUSD = (balance: number, currency: string) => {
       if (currency === 'USD') return balance;
-      if (currency === 'TWD') return balance / FX_RATE;
+      if (currency === 'TWD') return balance / fxRate;
       // For other currencies, we'd need more rates, but for now let's handle the main ones
-      if (currency === 'HKD') return balance / 7.8;
-      if (currency === 'JPY') return balance / 150;
+      if (currency === 'HKD') return balance / hkdRate;
+      if (currency === 'JPY') return balance / jpyRate;
       return balance;
     };
 
@@ -637,7 +652,7 @@ export default function App() {
       .filter(a => a.type === 'Credit Card')
       .reduce((sum, a) => sum + convertToUSD(a.balance, a.currency), 0);
     
-    const TWD_RATE = FX_RATE;
+    const TWD_RATE = fxRate;
     const totalRaw = usdCash + (twdCash / TWD_RATE) + equitiesUSD - liabilitiesUSD;
     
     // Estimated tax drag: 15% on investments, 5% on foreign cash
@@ -815,6 +830,9 @@ export default function App() {
     ].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
     const newData: DashboardData = {
+      usdTwdRate: fxRate,
+      usdHkdRate: hkdRate,
+      usdJpyRate: jpyRate,
       totalRaw,
       totalPurchasingPower,
       totalPurchasingPowerTrend: trendData,
@@ -912,7 +930,7 @@ export default function App() {
     if (hasChanged) {
       setData(prev => ({ ...prev, ...newData }));
     }
-  }, [user, firestoreAccounts, firestoreTransactions, accounts, transactions]);
+  }, [user, firestoreAccounts, firestoreTransactions, accounts, transactions, fxRate, hkdRate, jpyRate]);
 
   // Google OAuth Message Listener (Removed custom flow listener)
   
@@ -961,6 +979,11 @@ export default function App() {
 
   const generateNewInsights = async () => {
     if (!user || isGeneratingInsights) return;
+    const ai = getGeminiClient();
+    if (!ai) {
+      console.warn('GEMINI_API_KEY is not set; skipping insight generation.');
+      return;
+    }
     setIsGeneratingInsights(true);
     try {
       const prompt = `
@@ -969,7 +992,7 @@ export default function App() {
         
         Current Accounts: ${JSON.stringify(accounts.map(a => ({ name: a.name, balance: a.balance, currency: a.currency, type: a.type })))}
         Recent Transactions: ${JSON.stringify(transactions.slice(0, 10).map(t => ({ desc: t.description, amount: t.amount, currency: t.currency })))}
-        Current Exchange Rate: 1 USD = ${FX_RATE} TWD
+        Current Exchange Rate: 1 USD = ${fxRate} TWD
         
         Generate 3-4 actionable financial insights. 
         Each insight must have:
@@ -1022,6 +1045,7 @@ export default function App() {
     setLoading(true);
     try {
       const plaidRes = await fetch('/api/plaid_status');
+      if (!plaidRes.ok) throw new Error(`plaid_status ${plaidRes.status}`);
       const plaidStatus = await plaidRes.json();
       setPlaidConnected(plaidStatus.connected);
 
@@ -1030,6 +1054,10 @@ export default function App() {
         fetch('/api/accounts'),
         fetch('/api/transactions')
       ]);
+
+      if (!dashboardRes.ok) throw new Error(`dashboard ${dashboardRes.status}`);
+      if (!accountsRes.ok) throw new Error(`accounts ${accountsRes.status}`);
+      if (!transactionsRes.ok) throw new Error(`transactions ${transactionsRes.status}`);
       
       const dashboardData = await dashboardRes.json();
       const accountsData = await accountsRes.json();
@@ -1048,6 +1076,9 @@ export default function App() {
       setLoading(false);
     }
   };
+
+  const fetchDataRef = useRef(fetchData);
+  fetchDataRef.current = fetchData;
 
   const syncWithGoogleDrive = async (token?: string) => {
     const activeToken = token || googleAccessToken;
@@ -1182,7 +1213,6 @@ export default function App() {
 
   const disconnectGoogle = async () => {
     try {
-      await fetch('/api/auth/google/disconnect', { method: 'POST' });
       setIsGoogleConnected(false);
       setGoogleAccessToken(null);
       localStorage.removeItem('google_access_token');
@@ -1196,6 +1226,7 @@ export default function App() {
   const handleLogin = async () => {
     if (isLoggingIn) return;
     setIsLoggingIn(true);
+    setLoginError(null);
     setGoogleDriveError(null);
     try {
       const result = await signInWithPopup(auth, googleProvider);
@@ -1268,6 +1299,8 @@ export default function App() {
     } catch (error: any) {
       if (error.code === 'auth/cancelled-popup-request') {
         console.log("Login popup was closed or another request was made.");
+      } else if (error.code === 'auth/unauthorized-domain') {
+        setLoginError(t('firebaseUnauthorizedDomain'));
       } else {
         console.error("Login failed", error);
       }
@@ -1287,35 +1320,73 @@ export default function App() {
     setFirestoreAccounts([]);
     setFirestoreTransactions([]);
     setMinionTasks([]);
-  };
-
-  const createLinkToken = async () => {
-    const response = await fetch('/api/create_link_token', { method: 'POST' });
-    const data = await response.json();
-    setLinkToken(data.link_token);
+    setLinkToken(null);
   };
 
   useEffect(() => {
+    let cancelled = false;
+    fetch('/api/plaid_ready')
+      .then((r) => r.json())
+      .then((d: { configured?: boolean }) => {
+        if (!cancelled) setPlaidBackendReady(Boolean(d.configured));
+      })
+      .catch(() => {
+        if (!cancelled) setPlaidBackendReady(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const createLinkToken = useCallback(async () => {
+    if (plaidBackendReady !== true) return;
+    const response = await fetch('/api/create_link_token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_user_id: user?.uid ?? 'anonymous' }),
+    });
+    if (response.status === 503) {
+      const err = await response.json().catch(() => ({}));
+      if (err?.code === 'PLAID_NOT_CONFIGURED') {
+        console.info('[Plaid] Skipping Link token: add PLAID_CLIENT_ID and PLAID_SECRET to .env for bank linking.');
+      }
+      return;
+    }
+    if (!response.ok) {
+      console.error('create_link_token failed', response.status);
+      return;
+    }
+    const data = await response.json();
+    setLinkToken(data.link_token);
+  }, [plaidBackendReady, user?.uid]);
+
+  useEffect(() => {
+    if (plaidBackendReady !== true) return;
     if ((activeTab === 'settings' || activeTab === 'accounts' || activeTab === 'dashboard') && !linkToken) {
       createLinkToken();
     }
     if (user && (activeTab === 'accounts' || activeTab === 'dashboard' || activeTab === 'transactions')) {
       fetchData();
     }
-  }, [activeTab]);
+  }, [activeTab, plaidBackendReady, linkToken, user, createLinkToken]);
 
-  const { open, ready } = usePlaidLink({
-    token: linkToken,
-    onSuccess: async (public_token, metadata) => {
-      await fetch('/api/exchange_public_token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ public_token }),
-      });
-      setPlaidConnected(true);
-      fetchData();
-    },
-  });
+  const plaidLinkOptions = useMemo(
+    () => ({
+      token: linkToken,
+      onSuccess: async (public_token: string) => {
+        await fetch('/api/exchange_public_token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ public_token }),
+        });
+        setPlaidConnected(true);
+        fetchDataRef.current();
+      },
+    }),
+    [linkToken]
+  );
+
+  const { open, ready } = usePlaidLink(plaidLinkOptions);
 
   const disconnectPlaid = async () => {
     await fetch('/api/plaid_disconnect', { method: 'POST' });
@@ -1353,19 +1424,32 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ instruction })
       });
+      if (!response.ok) return;
       const newTask = await response.json();
       setMinionTasks(prev => [newTask, ...prev]);
       
-      // Poll for updates
+      let attempts = 0;
+      const maxAttempts = 45;
       const pollInterval = setInterval(async () => {
-        const res = await fetch('/api/minion/tasks');
-        const tasks = await res.json();
-        setMinionTasks(tasks);
-        
-        const updatedTask = tasks.find((t: any) => t.id === newTask.id);
-        if (updatedTask && updatedTask.status === 'COMPLETED') {
-          clearInterval(pollInterval);
-          fetchData(); // Refresh dashboard data if needed
+        attempts += 1;
+        try {
+          const res = await fetch('/api/minion/tasks');
+          if (!res.ok) {
+            if (attempts >= maxAttempts) clearInterval(pollInterval);
+            return;
+          }
+          const tasks = await res.json();
+          setMinionTasks(tasks);
+          
+          const updatedTask = tasks.find((t: any) => t.id === newTask.id);
+          if (updatedTask && updatedTask.status === 'COMPLETED') {
+            clearInterval(pollInterval);
+            fetchData();
+          } else if (attempts >= maxAttempts) {
+            clearInterval(pollInterval);
+          }
+        } catch {
+          if (attempts >= maxAttempts) clearInterval(pollInterval);
         }
       }, 2000);
     } catch (err) {
@@ -1401,6 +1485,16 @@ export default function App() {
 
       if (accounts.length === 0) {
         throw new Error("No accounts found. Please seed demo data or connect your accounts first.");
+      }
+
+      const ai = getGeminiClient();
+      if (!ai) {
+        await updateDoc(taskRef, {
+          status: 'FAILED',
+          result: 'GEMINI_API_KEY is not configured.',
+          updatedAt: new Date().toISOString()
+        });
+        return;
       }
 
       // Prepare context for Gemini
@@ -1634,6 +1728,11 @@ export default function App() {
     if (importText.trim()) {
       setIsProcessingImport(true);
       try {
+        const ai = getGeminiClient();
+        if (!ai) {
+          console.warn('GEMINI_API_KEY is not set; cannot parse import.');
+          return;
+        }
         const prompt = `Parse the following financial holding data and extract assets. 
         Return a JSON array of accounts, where each account has:
         - name: account name
@@ -1729,10 +1828,15 @@ export default function App() {
 
   const generateStrategyNews = async () => {
     if (!user) return;
+    const ai = getGeminiClient();
+    if (!ai) {
+      console.warn('GEMINI_API_KEY is not set; skipping strategy news.');
+      return;
+    }
     setIsGeneratingNews(true);
     try {
       const prompt = `Generate 4 real-time cross-border financial news items for a user with assets in both US and Taiwan.
-      Current FX Rate: ${FX_RATE} TWD/USD.
+      Current FX Rate: ${fxRate} TWD/USD.
       Focus on: TSMC, AI chips, Fed rates, TWD/USD trends, and cross-border tax compliance.
       Return JSON array of objects with: title, source (e.g., 'Minion: Market Scanner'), sentiment (POSITIVE, NEUTRAL, CAUTION), and summary.`;
 
@@ -1770,6 +1874,11 @@ export default function App() {
 
   const handleBulkCategorize = async () => {
     if (!user || transactions.length === 0) return;
+    const ai = getGeminiClient();
+    if (!ai) {
+      console.warn('GEMINI_API_KEY is not set; cannot categorize.');
+      return;
+    }
     setIsCategorizing(true);
     try {
       const uncategorized = transactions.filter(t => !t.category || t.category === 'General').slice(0, 15);
@@ -1811,6 +1920,11 @@ export default function App() {
   const [isScanningTax, setIsScanningTax] = useState(false);
   const handleDeepTaxScan = async () => {
     if (!user || accounts.length === 0) return;
+    const ai = getGeminiClient();
+    if (!ai) {
+      alert('GEMINI_API_KEY is not set. Add it to your .env file to use AI tax scan.');
+      return;
+    }
     setIsScanningTax(true);
     try {
       const context = {
@@ -1975,6 +2089,13 @@ export default function App() {
                        file.type === 'application/vnd.ms-excel';
       
       reader.onload = async (event) => {
+        const ai = getGeminiClient();
+        if (!ai) {
+          console.warn('GEMINI_API_KEY is not set; OCR import skipped.');
+          setIsOCRProcessing(false);
+          return;
+        }
+
         let contents;
         
         const extractionPrompt = `Extract all financial accounts found in this document. 
@@ -2188,7 +2309,10 @@ export default function App() {
 
   const convertToUSD = (amount: number, currency: string) => {
     if (currency === 'USD') return amount;
-    return amount / FX_RATE;
+    if (currency === 'TWD') return amount / fxRate;
+    if (currency === 'HKD') return amount / hkdRate;
+    if (currency === 'JPY') return amount / jpyRate;
+    return amount;
   };
 
   const handleDownloadFBAR = () => {
@@ -2514,6 +2638,12 @@ export default function App() {
     setIsAccountChatLoading(true);
     
     try {
+      const ai = getGeminiClient();
+      if (!ai) {
+        setAccountChatHistory(prev => [...prev, { role: 'model', content: 'AI is not configured (set GEMINI_API_KEY in .env).' }]);
+        return;
+      }
+
       const accountContext = accounts.map(a => `${a.institution} - ${a.name}: ${formatCurrency(a.balance, a.currency, a.currency)} (${a.currency})`).join('\n');
       const transactionContext = transactions.slice(0, 10).map(t => `${t.date}: ${t.description} ${formatCurrency(t.amount, t.currency, t.currency)} (${t.category})`).join('\n');
       
@@ -2618,8 +2748,9 @@ export default function App() {
         <AuthPage 
           onLogin={handleLogin} 
           isLoggingIn={isLoggingIn} 
-          onBack={() => setShowAuth(false)} 
+          onBack={() => { setShowAuth(false); setLoginError(null); }} 
           t={t}
+          loginError={loginError}
         />
       );
     }
@@ -3004,7 +3135,7 @@ export default function App() {
                     title={t('twdCash')} 
                     value={formatCurrency(dashboardData.twdCash, 'TWD')}
                     subtitle="Cathay United Bank"
-                    percentage={dashboardData.totalRaw > 0 ? Math.round(((dashboardData.twdCash / FX_RATE) / dashboardData.totalRaw) * 100) : 0}
+                    percentage={dashboardData.totalRaw > 0 ? Math.round(((dashboardData.twdCash / fxRate) / dashboardData.totalRaw) * 100) : 0}
                     t={t}
                     onClick={() => setActiveTab('accounts')}
                   />

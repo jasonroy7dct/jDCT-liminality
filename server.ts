@@ -6,6 +6,25 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
+const PORT = Number(process.env.PORT) || 3000;
+
+function parseRate(name: string, fallback: number): number {
+  const v = process.env[name];
+  if (v === undefined || v === '') return fallback;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+const USD_TWD_RATE = parseRate('USD_TWD_RATE', 32.85);
+const USD_HKD_RATE = parseRate('USD_HKD_RATE', 7.8);
+const USD_JPY_RATE = parseRate('USD_JPY_RATE', 150);
+
+function isPlaidConfigured(): boolean {
+  const id = process.env.PLAID_CLIENT_ID?.trim();
+  const secret = process.env.PLAID_SECRET?.trim();
+  return Boolean(id && secret);
+}
+
 const configuration = new Configuration({
   basePath: PlaidEnvironments[process.env.PLAID_ENV || 'sandbox'],
   baseOptions: {
@@ -20,7 +39,6 @@ const plaidClient = new PlaidApi(configuration);
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
 
   app.use(express.json());
 
@@ -101,7 +119,7 @@ async function startServer() {
     const equities = currentAccounts.filter(a => a.type === 'Investment').reduce((sum, a) => sum + a.balance, 0);
     const liabilities = currentAccounts.filter(a => a.type === 'Credit Card').reduce((sum, a) => sum + a.balance, 0);
     
-    const TWD_RATE = 32.85; 
+    const TWD_RATE = USD_TWD_RATE;
     const totalRaw = usdCash + (twdCash / TWD_RATE) + equities - liabilities;
     const taxDrag = (equities * 0.15) + (twdCash / TWD_RATE * 0.05); 
     const totalPurchasingPower = Math.max(0, totalRaw - taxDrag);
@@ -151,9 +169,9 @@ async function startServer() {
     }
     
     const forexSignals = [
-      { pair: 'USD/TWD', rate: '32.85', signal: 'SELL', trend: 'down', reason: 'TWD oversold on RSI(14). Expect mean reversion.' },
-      { pair: 'USD/JPY', rate: '151.20', signal: 'BUY', trend: 'up', reason: 'BoJ yield curve control remains dovish.' },
-      { pair: 'USD/HKD', rate: '7.82', signal: 'HOLD', trend: 'up', reason: 'Peg remains stable within 7.75-7.85 band.' },
+      { pair: 'USD/TWD', rate: TWD_RATE.toFixed(2), signal: 'SELL', trend: 'down', reason: 'TWD oversold on RSI(14). Expect mean reversion.' },
+      { pair: 'USD/JPY', rate: USD_JPY_RATE.toFixed(2), signal: 'BUY', trend: 'up', reason: 'BoJ yield curve control remains dovish.' },
+      { pair: 'USD/HKD', rate: USD_HKD_RATE.toFixed(2), signal: 'HOLD', trend: 'up', reason: 'Peg remains stable within 7.75-7.85 band.' },
       { pair: 'EUR/USD', rate: '1.08', signal: 'BUY', trend: 'up', reason: 'ECB hawkish pivot on inflation data.' }
     ];
 
@@ -168,6 +186,9 @@ async function startServer() {
       totalPurchasingPower,
       totalPurchasingPowerTrend: trend,
       allocation,
+      usdTwdRate: USD_TWD_RATE,
+      usdHkdRate: USD_HKD_RATE,
+      usdJpyRate: USD_JPY_RATE,
       usdCash,
       twdCash,
       crossBorderEquities: equities,
@@ -256,7 +277,7 @@ async function startServer() {
   app.post("/api/minion/execute", (req, res) => {
     const { instruction } = req.body;
     const newTask = {
-      id: Math.random().toString(36).substr(2, 9),
+      id: Math.random().toString(36).substring(2, 11),
       type: 'WEALTH_ACTION',
       status: 'EXECUTING',
       instruction,
@@ -294,16 +315,30 @@ async function startServer() {
     res.json(currentTransactions);
   });
 
+  app.get('/api/plaid_ready', (_req, res) => {
+    res.json({ configured: isPlaidConfigured() });
+  });
+
   app.post('/api/plaid_disconnect', (req, res) => {
     accessToken = null;
     res.json({ success: true });
   });
 
   app.post('/api/create_link_token', async (req, res) => {
+    if (!isPlaidConfigured()) {
+      return res.status(503).json({
+        code: 'PLAID_NOT_CONFIGURED',
+        error: 'Plaid is not configured. Add PLAID_CLIENT_ID and PLAID_SECRET to your .env file.',
+      });
+    }
     try {
+      const clientUserId =
+        typeof req.body?.client_user_id === 'string' && req.body.client_user_id.trim()
+          ? req.body.client_user_id.trim()
+          : 'anonymous';
       const response = await plaidClient.linkTokenCreate({
-        user: { client_user_id: 'user-id' },
-        client_name: 'Liminality',
+        user: { client_user_id: clientUserId },
+        client_name: process.env.PLAID_CLIENT_NAME || 'Liminality',
         products: [Products.Transactions, Products.Investments],
         country_codes: [CountryCode.Us],
         language: 'en',
