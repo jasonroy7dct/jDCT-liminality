@@ -1,0 +1,127 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile and settings",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "currency": { "type": "string", "enum": ["USD", "TWD"] },
+        "plaidConnected": { "type": "boolean" },
+        "totalPurchasingPower": { "type": "number" },
+        "wealthHealthScore": { "type": "number" }
+      },
+      "required": ["uid", "email"]
+    },
+    "Account": {
+      "title": "Account",
+      "description": "Financial account details",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "institution": { "type": "string" },
+        "type": { "type": "string" },
+        "balance": { "type": "number" },
+        "currency": { "type": "string", "enum": ["USD", "TWD"] },
+        "mask": { "type": "string" },
+        "subtype": { "type": "string" },
+        "officialName": { "type": "string" }
+      },
+      "required": ["id", "institution", "balance", "currency"]
+    },
+    "Transaction": {
+      "title": "Transaction",
+      "description": "Financial transaction record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "date": { "type": "string", "format": "date" },
+        "amount": { "type": "number" },
+        "description": { "type": "string" },
+        "category": { "type": "string" },
+        "currency": { "type": "string", "enum": ["USD", "TWD"] },
+        "pending": { "type": "boolean" }
+      },
+      "required": ["id", "date", "amount", "description", "currency"]
+    },
+    "MinionTask": {
+      "title": "MinionTask",
+      "description": "Autonomous agent task",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string" },
+        "status": { "type": "string", "enum": ["PENDING", "EXECUTING", "COMPLETED", "FAILED"] },
+        "instruction": { "type": "string" },
+        "reasoning": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "type", "status", "instruction", "createdAt", "updatedAt"]
+    },
+    "SandboxState": {
+      "title": "SandboxState",
+      "description": "Simulation mode state",
+      "type": "object",
+      "properties": {
+        "isActive": { "type": "boolean" },
+        "lastReset": { "type": "string", "format": "date-time" }
+      },
+      "required": ["isActive"]
+    },
+    "Strategy": {
+      "title": "Strategy",
+      "description": "Financial strategy and recommendations",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "summary": { "type": "string" },
+        "pillars": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "title": { "type": "string" },
+              "description": { "type": "string" },
+              "action": { "type": "string" },
+              "impact": { "type": "string" }
+            }
+          }
+        },
+        "riskLevel": { "type": "string" },
+        "nextReviewDate": { "type": "string" },
+        "generatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "summary", "pillars", "generatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile document"
+    },
+    "/users/{userId}/accounts/{accountId}": {
+      "schema": "Account",
+      "description": "User's financial accounts"
+    },
+    "/users/{userId}/transactions/{transactionId}": {
+      "schema": "Transaction",
+      "description": "User's transaction history"
+    },
+    "/users/{userId}/minionTasks/{taskId}": {
+      "schema": "MinionTask",
+      "description": "User's agent tasks"
+    },
+    "/users/{userId}/sandboxState/current": {
+      "schema": "SandboxState",
+      "description": "User's current sandbox state"
+    },
+    "/users/{userId}/strategy/current": {
+      "schema": "Strategy",
+      "description": "User's current financial strategy"
+    }
+  }
+}

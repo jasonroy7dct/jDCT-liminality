@@ -1,0 +1,223 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: /users/{userId}
+    // Fields:
+    //   - uid: string (required)
+    //   - email: string (required, email format)
+    //   - displayName: string (optional)
+    //   - photoURL: string (optional)
+    //   - currency: string (optional, enum: USD, TWD)
+    //   - plaidConnected: bool (optional)
+    //
+    // Collection: /users/{userId}/accounts/{accountId}
+    // Fields:
+    //   - id: string (required)
+    //   - institution: string (required)
+    //   - balance: number (required)
+    //   - currency: string (required, enum: USD, TWD)
+    //   - type: string (optional)
+    //   - mask: string (optional)
+    //   - subtype: string (optional)
+    //   - officialName: string (optional)
+    //
+    // Collection: /users/{userId}/transactions/{transactionId}
+    // Fields:
+    //   - id: string (required)
+    //   - date: string (required, date format)
+    //   - amount: number (required)
+    //   - description: string (required)
+    //   - category: string (optional)
+    //   - currency: string (required, enum: USD, TWD)
+    //   - pending: bool (optional)
+    //
+    // Collection: /users/{userId}/minionTasks/{taskId}
+    // Fields:
+    //   - id: string (required)
+    //   - type: string (required)
+    //   - status: string (required, enum: PENDING, EXECUTING, COMPLETED, FAILED)
+    //   - instruction: string (required)
+    //   - reasoning: string (optional)
+    //   - createdAt: string (required, date-time)
+    //   - updatedAt: string (required, date-time)
+    //
+    // Collection: /users/{userId}/sandboxState/current
+    // Fields:
+    //   - isActive: bool (required)
+    //   - lastReset: string (optional, date-time)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "po.hsuan.hsieh@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidDateString(dateStr) {
+      return dateStr is string && (dateStr.matches("^\\d{4}-\\d{2}-\\d{2}$") || dateStr.matches("^\\d{4}-\\d{2}-\\d{2}T.*$"));
+    }
+
+    function isValidDateTimeString(dateTimeStr) {
+      return dateTimeStr is string && dateTimeStr.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return data.uid is string && data.uid.size() > 0 &&
+             isValidEmail(data.email) &&
+             (!('displayName' in data) || data.displayName is string) &&
+             (!('userName' in data) || data.userName is string) &&
+             (!('photoURL' in data) || data.photoURL is string) &&
+             (!('currency' in data) || data.currency in ['USD', 'TWD']) &&
+             (!('displayCurrency' in data) || data.displayCurrency in ['USD', 'TWD']) &&
+             (!('plaidConnected' in data) || data.plaidConnected is bool) &&
+             (!('totalPurchasingPower' in data) || data.totalPurchasingPower is number) &&
+             (!('wealthHealthScore' in data) || data.wealthHealthScore is number) &&
+             (!('lastLogin' in data) || isValidDateTimeString(data.lastLogin)) &&
+             (!('lastUpdated' in data) || isValidDateTimeString(data.lastUpdated)) &&
+             (!('role' in data) || data.role is string);
+    }
+
+    function isValidAccount(data) {
+      return data.institution is string && data.institution.size() > 0 &&
+             data.balance is number &&
+             (!('currency' in data) || data.currency is string) &&
+             (!('id' in data) || data.id is string) &&
+             (!('name' in data) || data.name is string) &&
+             (!('type' in data) || data.type is string) &&
+             (!('createdAt' in data) || isValidDateTimeString(data.createdAt)) &&
+             (!('updatedAt' in data) || isValidDateTimeString(data.updatedAt)) &&
+             (!('source' in data) || data.source is string) &&
+             (!('logo' in data) || data.logo is string);
+    }
+
+    function isValidTransaction(data) {
+      return (isValidDateString(data.date) || isValidDateTimeString(data.date)) &&
+             data.amount is number &&
+             data.description is string && data.description.size() > 0 &&
+             (!('currency' in data) || data.currency is string) &&
+             (!('id' in data) || data.id is string) &&
+             (!('accountId' in data) || data.accountId is string) &&
+             (!('category' in data) || data.category is string) &&
+             (!('status' in data) || data.status is string) &&
+             (!('pending' in data) || data.pending is bool) &&
+             (!('createdAt' in data) || isValidDateTimeString(data.createdAt)) &&
+             (!('source' in data) || data.source is string);
+    }
+
+    function isValidMinionTask(data) {
+      return data.type is string &&
+             data.status in ['PENDING', 'EXECUTING', 'COMPLETED', 'FAILED'] &&
+             data.instruction is string && data.instruction.size() > 0 &&
+             isValidDateTimeString(data.createdAt) &&
+             isValidDateTimeString(data.updatedAt) &&
+             (!('id' in data) || data.id is string) &&
+             (!('result' in data) || data.result is string) &&
+             (!('reasoning' in data) || data.reasoning is string) &&
+             (!('autonomousDecision' in data) || data.autonomousDecision is bool);
+    }
+
+    function isValidStrategy(data) {
+      return data.title is string &&
+             data.summary is string &&
+             data.pillars is list &&
+             isValidDateTimeString(data.generatedAt) &&
+             (!('riskLevel' in data) || data.riskLevel is string) &&
+             (!('nextReviewDate' in data) || data.nextReviewDate is string) &&
+             (!('taxOpportunityScore' in data) || data.taxOpportunityScore is number);
+    }
+
+    function isValidMinionInsight(data) {
+      return data.type in ['TAX', 'FOREX', 'WEALTH'] &&
+             data.title is string &&
+             data.description is string &&
+             data.priority in ['HIGH', 'MEDIUM', 'LOW'] &&
+             isValidDateTimeString(data.createdAt);
+    }
+
+    function isValidSandboxState(data) {
+      return data.isActive is bool &&
+             (!('lastReset' in data) || isValidDateTimeString(data.lastReset));
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data) && (!('role' in request.resource.data) || isAdmin());
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) && (request.resource.data.role == resource.data.role || isAdmin());
+
+      match /accounts/{accountId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create, update: if isOwner(userId) && isValidAccount(request.resource.data);
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+
+      match /transactions/{transactionId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create, update: if isOwner(userId) && isValidTransaction(request.resource.data);
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+
+      match /minionTasks/{taskId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create, update: if isOwner(userId) && isValidMinionTask(request.resource.data);
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+
+      match /sandboxState/{stateId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create, update: if isOwner(userId) && isValidSandboxState(request.resource.data);
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+
+      match /strategy/{strategyId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create, update: if isOwner(userId) && isValidStrategy(request.resource.data);
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+
+      match /minionInsights/{insightId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && isValidMinionInsight(request.resource.data);
+        allow update: if isOwner(userId) && isValidMinionInsight(request.resource.data);
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+    }
+
+    // Default deny
+    match /{path=**} {
+      allow read, write: if false;
+    }
+  }
+}
